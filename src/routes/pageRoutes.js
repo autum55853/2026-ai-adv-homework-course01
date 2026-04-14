@@ -46,14 +46,18 @@ router.get('/orders', function (req, res) {
   renderFront(res, 'orders', { title: '我的訂單', pageScript: 'orders' });
 });
 
-router.get('/orders/:id', function (req, res) {
+function renderOrderDetail(req, res) {
   renderFront(res, 'order-detail', {
     title: '訂單詳情',
     pageScript: 'order-detail',
     orderId: req.params.id,
     paymentResult: req.query.payment || ''
   });
-});
+}
+
+router.get('/orders/:id', renderOrderDetail);
+// 綠界付款完成後會以 POST 方式跳轉至 OrderResultURL
+router.post('/orders/:id', renderOrderDetail);
 
 // Admin pages
 router.get('/admin/products', function (req, res) {

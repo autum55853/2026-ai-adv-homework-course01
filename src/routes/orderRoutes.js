@@ -2,6 +2,7 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../database');
 const authMiddleware = require('../middleware/authMiddleware');
+const ecpay = require('../utils/ecpay');
 
 const router = express.Router();
 
@@ -311,9 +312,9 @@ router.get('/:id', (req, res) => {
 
 /**
  * @openapi
- * /api/orders/{id}/pay:
- *   patch:
- *     summary: 模擬付款（更新訂單付款狀態）
+ * /api/orders/{id}/ecpay-checkout:
+ *   post:
+ *     summary: 取得綠界信用卡付款表單參數
  *     tags: [Orders]
  *     security:
  *       - bearerAuth: []
@@ -323,20 +324,9 @@ router.get('/:id', (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [action]
- *             properties:
- *               action:
- *                 type: string
- *                 enum: [success, fail]
  *     responses:
  *       200:
- *         description: 付款狀態更新成功
+ *         description: 成功，回傳 ECPay 表單 actionUrl 與參數
  *         content:
  *           application/json:
  *             schema:
@@ -345,51 +335,24 @@ router.get('/:id', (req, res) => {
  *                 data:
  *                   type: object
  *                   properties:
- *                     id:
+ *                     actionUrl:
  *                       type: string
- *                     order_no:
- *                       type: string
- *                     total_amount:
- *                       type: integer
- *                     status:
- *                       type: string
- *                     created_at:
- *                       type: string
- *                     items:
- *                       type: array
- *                       items:
- *                         type: object
- *                         properties:
- *                           product_name:
- *                             type: string
- *                           product_price:
- *                             type: integer
- *                           quantity:
- *                             type: integer
+ *                     params:
+ *                       type: object
  *                 error:
  *                   type: string
  *                   nullable: true
  *                 message:
  *                   type: string
  *       400:
- *         description: action 無效或訂單狀態不是 pending
+ *         description: 訂單狀態不是 pending
  *       404:
  *         description: 訂單不存在
  */
-router.patch('/:id/pay', (req, res) => {
-  const { action } = req.body;
+router.post('/:id/ecpay-checkout', (req, res) => {
   const userId = req.user.userId;
-
-  const actionMap = { success: 'paid', fail: 'failed' };
-  if (!action || !actionMap[action]) {
-    return res.status(400).json({
-      data: null,
-      error: 'VALIDATION_ERROR',
-      message: 'action 必須為 success 或 fail'
-    });
-  }
-
   const order = db.prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?').get(req.params.id, userId);
+
   if (!order) {
     return res.status(404).json({ data: null, error: 'NOT_FOUND', message: '訂單不存在' });
   }
@@ -402,16 +365,26 @@ router.patch('/:id/pay', (req, res) => {
     });
   }
 
-  const newStatus = actionMap[action];
-  db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(newStatus, order.id);
-
-  const updated = db.prepare('SELECT * FROM orders WHERE id = ?').get(order.id);
   const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+  const merchantTradeNo = order.order_no.replace(/-/g, '');
+
+  const baseUrl = process.env.BASE_URL || 'http://localhost:3001';
+  const returnURL = `${baseUrl}/api/ecpay/notify`;
+  const orderResultURL = `${baseUrl}/orders/${order.id}?payment=success`;
+  const clientBackURL = `${baseUrl}/orders/${order.id}?payment=cancel`;
+
+  const { actionUrl, params } = ecpay.generateParams(
+    { ...order, items },
+    merchantTradeNo,
+    returnURL,
+    orderResultURL,
+    clientBackURL
+  );
 
   res.json({
-    data: { ...updated, items },
+    data: { actionUrl, params },
     error: null,
-    message: action === 'success' ? '付款成功' : '付款失敗'
+    message: '成功'
   });
 });
 

@@ -68,6 +68,13 @@ function initializeDatabase() {
     );
   `);
 
+  // 遷移：加入 ECPay 交易號碼欄位（try/catch 忽略已存在的情況）
+  try {
+    db.exec(`ALTER TABLE orders ADD COLUMN ecpay_trade_no TEXT NULL DEFAULT NULL`);
+  } catch (e) {
+    // 欄位已存在，忽略
+  }
+
   // Seed data
   seedAdminUser();
   seedProducts();
