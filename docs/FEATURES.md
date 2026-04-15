@@ -9,13 +9,12 @@
 | 購物車（訪客 + 登入雙模式） | ✅ 完成 |
 | 訂單建立（Transaction，含庫存扣減） | ✅ 完成 |
 | 訂單查詢（列表 + 詳情） | ✅ 完成 |
-| 模擬付款（success/fail） | ✅ 完成 |
 | 後台商品管理（CRUD） | ✅ 完成 |
 | 後台訂單管理（查詢 + status 過濾） | ✅ 完成 |
 | EJS 前台頁面 | ✅ 完成 |
 | EJS 後台頁面 | ✅ 完成 |
 | OpenAPI 文件產生 | ✅ 完成 |
-| 真實金流整合（綠界 ECPay） | ⏳ 未實作（.env 預留變數） |
+| 綠界 ECPay 信用卡金流（`POST /api/orders/:id/ecpay-checkout` 產生表單、`POST /api/ecpay/notify` 驗證 CheckMacValue 並更新訂單狀態） | ✅ 完成 |
 
 ---
 
@@ -201,22 +200,32 @@
 
 ---
 
-### PATCH /api/orders/:id/pay — 模擬付款
+### POST /api/orders/:id/ecpay-checkout — 產生 ECPay 付款表單參數
 
 **認證：** JWT 必填
 
-**必填欄位：** `action`，值為 `"success"` 或 `"fail"`
-
 **業務邏輯：**
-1. 確認訂單存在且屬於此用戶
-2. 確認 `status === 'pending'`（已付款或失敗的訂單不可再付款）
-3. `action: "success"` → status 改為 `"paid"`
-4. `action: "fail"` → status 改為 `"failed"`
+1. 以 `id AND user_id` 雙條件查詢訂單（限本人）
+2. 確認 `status === 'pending'`
+3. 組合 ECPay AIO Checkout V5 參數（`ChoosePayment: Credit`、`EncryptType: 1`）並計算 CheckMacValue
+4. 回傳 `{ actionUrl, params }`；前端動態建立 `<form>` 並 submit 至 `actionUrl`
 
 **錯誤情境：**
-- action 不是 success/fail → 400 `VALIDATION_ERROR`
-- 訂單不存在 → 404 `NOT_FOUND`
+- 訂單不存在或非本人 → 404 `NOT_FOUND`
 - 訂單 status 非 pending → 400 `INVALID_STATUS`
+
+---
+
+### POST /api/ecpay/notify — ECPay server-to-server 回呼
+
+**認證：** 無（公開端點；以 CheckMacValue 驗證來源）
+
+**業務邏輯：**
+1. 以相同邏輯重算 CheckMacValue，經 `crypto.timingSafeEqual` 比對；失敗回傳 `0|CheckMacValue Error`
+2. 以 `REPLACE(order_no, '-', '') = ?` 查詢訂單（ECPay 端不接受 `-`）
+3. 非 pending 訂單視為重送，直接回 `1|OK`（冪等）
+4. `RtnCode === 1` → `status = 'paid'`；否則 `failed`，同時寫入 `ecpay_trade_no`
+5. 回傳純文字 `1|OK`（ECPay 要求）
 
 ---
 

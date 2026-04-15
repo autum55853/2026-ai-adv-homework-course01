@@ -6,6 +6,24 @@
 
 ---
 
+## [1.1.0] - 2026-04-15
+
+### 新增
+- 綠界 ECPay 信用卡金流整合（AIO Checkout V5，`ChoosePayment: Credit`）
+  - `POST /api/orders/:id/ecpay-checkout`：產生表單參數與 CheckMacValue，回傳 `{ actionUrl, params }` 供前端 submit
+  - `POST /api/ecpay/notify`：server-to-server 回呼端點，以 `crypto.timingSafeEqual` 驗證 CheckMacValue，冪等更新訂單狀態
+  - `src/utils/ecpay.js`：共用 CheckMacValue 產生／驗證邏輯（.NET 風格 URL encode + SHA256）
+  - 訂單詳情頁（GET/POST 皆支援）可接收 ECPay OrderResultURL 的 POST 回跳
+- `orders.ecpay_trade_no` 欄位（`ALTER TABLE` 冪等遷移），回呼成功時寫入
+
+### 變更
+- 訂單詳情頁的「模擬付款成功／失敗」按鈕替換為單一「信用卡付款」按鈕
+
+### 移除
+- `PATCH /api/orders/:id/pay` 模擬付款 API 與前端對應邏輯
+
+---
+
 ## [1.0.0] - 2026-04-13
 
 ### 新增

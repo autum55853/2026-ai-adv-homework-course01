@@ -23,10 +23,13 @@
 │       ├── authRoutes.js      # POST /register、POST /login、GET /profile
 │       ├── productRoutes.js   # GET /api/products（分頁）、GET /api/products/:id（公開，無需認證）
 │       ├── cartRoutes.js      # GET/POST/PATCH/DELETE /api/cart（雙模式認證：JWT 或 X-Session-Id）
-│       ├── orderRoutes.js     # POST/GET /api/orders、GET /api/orders/:id、PATCH /api/orders/:id/pay（需 JWT）
+│       ├── orderRoutes.js     # POST/GET /api/orders、GET /api/orders/:id、POST /api/orders/:id/ecpay-checkout（需 JWT）
+│       ├── ecpayRoutes.js     # POST /api/ecpay/notify（ECPay server-to-server 回呼，無需認證，以 CheckMacValue 驗證）
 │       ├── adminProductRoutes.js # GET/POST /api/admin/products、PUT/DELETE /api/admin/products/:id（需 admin）
 │       ├── adminOrderRoutes.js   # GET /api/admin/orders（可過濾 status）、GET /api/admin/orders/:id（需 admin）
-│       └── pageRoutes.js      # 所有 EJS 頁面路由（前台 + 後台）
+│       └── pageRoutes.js      # 所有 EJS 頁面路由（前台 + 後台），order-detail 同時支援 GET/POST（ECPay OrderResultURL 以 POST 回跳）
+│   └── utils/
+│       └── ecpay.js           # ECPay 參數組合與 CheckMacValue 產生／驗證（.NET 風格 URL encode、SHA256）
 │
 ├── views/
 │   ├── layouts/
@@ -105,7 +108,8 @@ app.listen(PORT || 3001)
 | POST | /api/orders | orderRoutes.js | JWT | 從購物車建立訂單（清空購物車、扣庫存） |
 | GET | /api/orders | orderRoutes.js | JWT | 自己的訂單列表 |
 | GET | /api/orders/:id | orderRoutes.js | JWT | 訂單詳情（含 order_items） |
-| PATCH | /api/orders/:id/pay | orderRoutes.js | JWT | 模擬付款（action: success/fail） |
+| POST | /api/orders/:id/ecpay-checkout | orderRoutes.js | JWT | 產生 ECPay 付款表單參數（`{ actionUrl, params }`，前端 submit 至綠界） |
+| POST | /api/ecpay/notify | ecpayRoutes.js | 無（CheckMacValue 驗證） | ECPay server-to-server 回呼，更新訂單狀態（冪等） |
 | GET | /api/admin/products | adminProductRoutes.js | JWT + admin | 後台商品列表（分頁） |
 | POST | /api/admin/products | adminProductRoutes.js | JWT + admin | 新增商品 |
 | PUT | /api/admin/products/:id | adminProductRoutes.js | JWT + admin | 更新商品（部分欄位也可） |
@@ -233,6 +237,7 @@ dualAuth 邏輯：
 | recipient_address | TEXT | NOT NULL | 收件地址 |
 | total_amount | INTEGER | NOT NULL | 訂單總金額（下單時計算快照） |
 | status | TEXT | NOT NULL DEFAULT 'pending', CHECK IN ('pending','paid','failed') | 訂單狀態 |
+| ecpay_trade_no | TEXT | — | ECPay 交易編號；回呼成功時寫入（後補欄位，以 `ALTER TABLE` 冪等新增） |
 | created_at | TEXT | NOT NULL DEFAULT datetime('now') | 建立時間 |
 
 ### order_items 表
@@ -250,19 +255,33 @@ dualAuth 邏輯：
 
 ---
 
-## 模擬付款流程
+## 付款流程（綠界 ECPay，2026-04 接入）
 
-此專案沒有真實金流整合，付款以模擬 API 實現：
+原「模擬付款」API 已於 2026-04 完全移除，替換為綠界 ECPay AIO Checkout V5 信用卡金流（`ChoosePayment: Credit`）。
 
 ```
-PATCH /api/orders/:id/pay
-  body: { "action": "success" }  →  訂單狀態改為 "paid"
-  body: { "action": "fail" }     →  訂單狀態改為 "failed"
+用戶在訂單詳情頁點「信用卡付款」
+  → POST /api/orders/:id/ecpay-checkout（JWT）
+      回傳 { actionUrl, params }
+  → 前端動態建立 <form method="POST" action={actionUrl}> 並 submit
+  → 用戶於 ECPay 頁面完成刷卡
+
+[通道 A] Server-to-server（權威）
+  ECPay POST /api/ecpay/notify
+    → 驗證 CheckMacValue（crypto.timingSafeEqual）
+    → WHERE REPLACE(order_no, '-', '') = ?
+    → 冪等（非 pending 直接回 1|OK）
+    → 更新 status + ecpay_trade_no
+    → 回傳純文字 1|OK
+
+[通道 B] 瀏覽器跳轉（顯示用）
+  ECPay POST /orders/:id?payment=success
+    → pageRoutes 同時註冊 GET/POST 以接受回跳
 ```
 
-限制：
-- 只有 `status = 'pending'` 的訂單可以執行付款
-- 只有訂單的擁有者可以操作（`WHERE id = ? AND user_id = ?`）
-- 狀態一旦變更即無法還原（無 `pending` 回復機制）
-
-`.env.example` 中的 `ECPAY_*` 變數為未來接入綠界金流預留，目前程式碼中未使用。
+**關鍵設計：**
+- 訂單狀態以通道 A 為準，通道 B 僅用於用戶體驗
+- CheckMacValue 使用 .NET 相容 URL encode（`encodeURIComponent` + `%20→+`），排序後串 HashKey/IV 再 SHA256 取大寫
+- `ecpay_trade_no` 欄位以 `ALTER TABLE ... ADD COLUMN` 包在 try/catch 中達到冪等遷移
+- `BASE_URL` 環境變數（本地開發指向 ngrok）作為 ReturnURL / OrderResultURL 的前綴
+- 實作細節與踩雷紀錄見 `docs/plans/archive/2026-04-ecpay.md`
